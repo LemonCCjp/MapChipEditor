@@ -439,18 +439,22 @@ class MainWindow(QMainWindow):
 
         file_menu = menu_bar.addMenu("ファイル")
 
-        file_menu.addAction("新規")
-        file_menu.addAction("開く")
-        file_menu.addAction("保存")
+        new_action = file_menu.addAction("新規")
+        new_action.triggered.connect(self.new_map)
+
+        save_action = file_menu.addAction("保存")
+        save_action.triggered.connect(self.save_map)
 
         file_menu.addSeparator()
 
-        file_menu.addAction("終了")
+        
+        exit_action = file_menu.addAction("終了")
+        exit_action.triggered.connect(self.exit_app)
 
-        edit_menu = menu_bar.addMenu("編集")
+        # edit_menu = menu_bar.addMenu("編集")
 
-        edit_menu.addAction("元に戻す")
-        edit_menu.addAction("やり直す")
+        # edit_menu.addAction("元に戻す")
+        # edit_menu.addAction("やり直す")
 
     # --------------------------------------------------------
     # メインUI
@@ -593,10 +597,11 @@ class MainWindow(QMainWindow):
         # ====================================================
 
         generate_button.clicked.connect(self.generate_map)
+        save_button.clicked.connect(self.save_map)
 
-    # --------------------------------------------------------
-    # マップ生成
-    # --------------------------------------------------------
+        # --------------------------------------------------------
+        # マップ生成
+        # --------------------------------------------------------
 
     def generate_map(self):
 
@@ -658,6 +663,64 @@ class MainWindow(QMainWindow):
         self.map_canvas.update_size()
         self.map_canvas.set_map_data(self.map_data)
 
+
+        # --------------------------------------------------------
+        # 新規マップ作成
+        # --------------------------------------------------------
+
+    def new_map(self):
+        # 新規作成の確認
+        result = QMessageBox.question(
+            self,
+            "新規作成",
+            "現在のマップを破棄して、新しいマップを作成しますか？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        # 「いいえ」なら何もしない
+        if result != QMessageBox.Yes:
+            return
+
+        # 現在の設定サイズで空のマップを作成
+        width = self.width_spin.value()
+        height = self.height_spin.value()
+        cell_size = self.cell_spin.value()
+
+        self.map_data = [
+            ["0" for _ in range(width)]
+            for _ in range(height)
+        ]
+
+        # マップ表示を更新
+        self.map_canvas.width_count = width
+        self.map_canvas.height_count = height
+        self.map_canvas.cell_size = cell_size
+
+        self.map_canvas.update_size()
+        self.map_canvas.set_map_data(self.map_data)
+
+        
+    def exit_app(self):
+        result = QMessageBox.question(
+            self,
+            "終了確認",
+            "マップを保存しますか？",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Cancel
+        )
+
+        # キャンセルなら終了しない
+        if result == QMessageBox.Cancel:
+            return
+
+        # はいなら保存してから終了
+        if result == QMessageBox.Yes:
+            self.save_map()
+
+        # はい・いいえのどちらでも終了
+        self.close()
+
     # --------------------------------------------------------
     # ステータスバー
     # --------------------------------------------------------
@@ -667,6 +730,49 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "ブロック: なし    ID: -    座標: X=- Y=-"
         )
+
+    
+    def save_map(self):
+        # 上書き確認ダイアログ
+        result = QMessageBox.question(
+            self,
+            "確認",
+            "上書き保存しますか？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        # 「いいえ」が選択された場合は保存しない
+        if result != QMessageBox.Yes:
+            return
+
+        # 保存先フォルダが存在しない場合は作成
+        map_folder = "map"
+        os.makedirs(map_folder, exist_ok=True)
+
+        # 保存先
+        map_path = os.path.join(map_folder, "map.txt")
+
+        try:
+            with open(map_path, "w", encoding="utf-8") as f:
+                for row in self.map_data:
+                    # 各行のブロックIDを連結して保存
+                    line = "".join(str(block_id) for block_id in row)
+                    f.write(line + "\n")
+
+            QMessageBox.information(
+                self,
+                "保存完了",
+                "保存しました。"
+            )
+
+        except OSError as e:
+            QMessageBox.critical(
+                self,
+                "保存エラー",
+                f"保存できませんでした。\n{e}"
+            )
+
 
     def load_map(self):
         map_path = os.path.join("map", "map.txt")
