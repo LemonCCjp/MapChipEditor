@@ -1,6 +1,7 @@
 import sys
 import os
 
+
 from PyQt5.QtCore import Qt, pyqtSignal, QSize
 from PyQt5.QtGui import QColor, QPainter, QPixmap, QIcon
 
@@ -25,6 +26,14 @@ from PyQt5.QtWidgets import (
 )
 
 from BlockManager import BlockManager
+
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+BLOCKS_DIR = os.path.join(BASE_DIR, "Blocks")
+os.makedirs(BLOCKS_DIR, exist_ok=True)
 
 
 class BlockIDDialog(QDialog):
@@ -408,7 +417,7 @@ class MainWindow(QMainWindow):
 
         self.map_data = []
 
-        self.block_manager = BlockManager()
+        self.block_manager = BlockManager(block_folder=BLOCKS_DIR)
 
         self.setWindowTitle("Map Chip Editor")
         self.resize(1270, 720)

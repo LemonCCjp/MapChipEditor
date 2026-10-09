@@ -1,11 +1,10 @@
 import os
 import json
 
-
 class BlockManager:
     def __init__(
         self,
-        block_folder="Blocks",
+        block_folder= "Blocks",
         json_path="blocks.json"
     ):
         self.block_folder = block_folder
