@@ -62,6 +62,8 @@ class BlockManager:
     def load_blocks(self):
         self.blocks.clear()
 
+        os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Blocks"), exist_ok=True)
+
         if not os.path.exists(self.block_folder):
             return
 
