@@ -1,9 +1,10 @@
 import sys
 import os
+import copy
 
 
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QColor, QPainter, QPixmap, QIcon
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QEvent
+from PyQt5.QtGui import QColor, QPainter, QPixmap, QIcon, QKeySequence
 
 from PyQt5.QtWidgets import (
     QApplication,
@@ -104,6 +105,10 @@ class BlockIDDialog(QDialog):
 # ============================================================
 
 class MapCanvas(QWidget):
+    edit_started = pyqtSignal()
+    undo_requested = pyqtSignal()
+    redo_requested = pyqtSignal()
+
     def __init__(
         self,
         block_manager,
@@ -124,6 +129,9 @@ class MapCanvas(QWidget):
 
         # マップデータ
         self.map_data = []
+
+        # 1回のマウスドラッグを1回のUndoとして扱う
+        self._stroke_recorded = False
 
         self.update_size()
 
@@ -218,10 +226,26 @@ class MapCanvas(QWidget):
 
     
     def mousePressEvent(self, event):
-        # マウスボタンを押したとき
+        # マウスの戻るボタン → Undo
+        if event.button() == Qt.XButton1:
+            self.undo_requested.emit()
+            event.accept()
+            return
+
+        # マウスの進むボタン → Redo
+        if event.button() == Qt.XButton2:
+            self.redo_requested.emit()
+            event.accept()
+            return
+
+        # 新しいクリック操作を開始
+        self._stroke_recorded = False
+
+        # 左クリック → ブロック配置
         if event.button() == Qt.LeftButton:
             self.edit_cell(event.pos(), Qt.LeftButton)
 
+        # 右クリック → ブロック削除
         elif event.button() == Qt.RightButton:
             self.edit_cell(event.pos(), Qt.RightButton)
 
@@ -233,6 +257,11 @@ class MapCanvas(QWidget):
         # 右クリックを押したまま移動 → 連続削除
         elif event.buttons() & Qt.RightButton:
             self.edit_cell(event.pos(), Qt.RightButton)
+
+    def mouseReleaseEvent(self, event):
+        # ドラッグ操作が終わったら次の操作用に戻す
+        self._stroke_recorded = False
+        super().mouseReleaseEvent(event)
 
     def edit_cell(self, pos, button):
         # マウス位置からマスの座標を計算
@@ -252,17 +281,26 @@ class MapCanvas(QWidget):
         if x >= len(self.map_data[y]):
             return
 
-        # 左クリック → ブロック配置
+        # 変更後のブロックIDを決定
         if button == Qt.LeftButton:
             if self.selected_block_id is None:
                 return
-
-            self.map_data[y][x] = self.selected_block_id
-
-        # 右クリック → ブロック削除
+            new_block_id = self.selected_block_id
         elif button == Qt.RightButton:
-            self.map_data[y][x] = "0"
+            new_block_id = "0"
+        else:
+            return
 
+        # 値が変わらない操作は履歴に登録しない
+        if self.map_data[y][x] == new_block_id:
+            return
+
+        # クリック/ドラッグ1回につき履歴を1回だけ保存
+        if not self._stroke_recorded:
+            self.edit_started.emit()
+            self._stroke_recorded = True
+
+        self.map_data[y][x] = new_block_id
         self.update()
         
 
@@ -417,6 +455,10 @@ class MainWindow(QMainWindow):
 
         self.map_data = []
 
+        # Undo / Redo 履歴
+        self.undo_stack = []
+        self.redo_stack = []
+
         self.block_manager = BlockManager(block_folder=BLOCKS_DIR)
 
         self.setWindowTitle("Map Chip Editor")
@@ -425,6 +467,11 @@ class MainWindow(QMainWindow):
         self.create_menu()
         self.create_ui()
         self.create_status_bar()
+
+        # マウスの戻る/進むボタンをアプリ内のどこからでも受け取る
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         self.setup_block_ids()
         self.block_panel.refresh_blocks()
@@ -460,10 +507,17 @@ class MainWindow(QMainWindow):
         exit_action = file_menu.addAction("終了")
         exit_action.triggered.connect(self.exit_app)
 
-        # edit_menu = menu_bar.addMenu("編集")
+        edit_menu = menu_bar.addMenu("編集")
 
-        # edit_menu.addAction("元に戻す")
-        # edit_menu.addAction("やり直す")
+        self.undo_action = edit_menu.addAction("戻る")
+        self.undo_action.setShortcut(QKeySequence.Undo)
+        self.undo_action.triggered.connect(self.undo)
+
+        self.redo_action = edit_menu.addAction("進む")
+        self.redo_action.setShortcut(QKeySequence.Redo)
+        self.redo_action.triggered.connect(self.redo)
+
+        self.update_undo_redo_actions()
 
     # --------------------------------------------------------
     # メインUI
@@ -516,6 +570,13 @@ class MainWindow(QMainWindow):
         generate_button = QPushButton("マップ生成")
         generate_button.setFixedWidth(100)
 
+        # Undo / Redo
+        undo_button = QPushButton("戻る")
+        undo_button.setFixedWidth(70)
+
+        redo_button = QPushButton("進む")
+        redo_button.setFixedWidth(70)
+
         # 保存
         save_button = QPushButton("保存")
         save_button.setFixedWidth(80)
@@ -536,6 +597,8 @@ class MainWindow(QMainWindow):
         toolbar_layout.addSpacing(15)
 
         toolbar_layout.addWidget(generate_button)
+        toolbar_layout.addWidget(undo_button)
+        toolbar_layout.addWidget(redo_button)
         toolbar_layout.addWidget(save_button)
 
         toolbar_layout.addStretch()
@@ -593,6 +656,11 @@ class MainWindow(QMainWindow):
             self.map_canvas.set_selected_block
         )
 
+        # マップ編集をUndo履歴へ接続
+        self.map_canvas.edit_started.connect(self.push_undo_state)
+        self.map_canvas.undo_requested.connect(self.undo)
+        self.map_canvas.redo_requested.connect(self.redo)
+
         self.scroll_area.setWidget(self.map_canvas)
 
         map_layout.addWidget(self.scroll_area)
@@ -606,6 +674,8 @@ class MainWindow(QMainWindow):
         # ====================================================
 
         generate_button.clicked.connect(self.generate_map)
+        undo_button.clicked.connect(self.undo)
+        redo_button.clicked.connect(self.redo)
         save_button.clicked.connect(self.save_map)
 
         # --------------------------------------------------------
@@ -617,6 +687,12 @@ class MainWindow(QMainWindow):
         new_width = self.width_spin.value()
         new_height = self.height_spin.value()
         cell_size = self.cell_spin.value()
+
+        # マップ設定が変わる前の状態をUndo履歴へ保存
+        if (new_width != self.map_canvas.width_count or
+                new_height != self.map_canvas.height_count or
+                cell_size != self.map_canvas.cell_size):
+            self.push_undo_state()
 
         # 現在のマップサイズ
         old_height = len(self.map_data)
@@ -691,6 +767,9 @@ class MainWindow(QMainWindow):
         if result != QMessageBox.Yes:
             return
 
+        # 新規作成前の状態をUndo履歴へ保存
+        self.push_undo_state()
+
         # 現在の設定サイズで空のマップを作成
         width = self.width_spin.value()
         height = self.height_spin.value()
@@ -710,6 +789,88 @@ class MainWindow(QMainWindow):
         self.map_canvas.set_map_data(self.map_data)
 
         
+    def eventFilter(self, watched, event):
+        # マウスのサイドボタンをアプリ内の操作として扱う
+        if event.type() == QEvent.MouseButtonPress:
+            if isinstance(watched, QWidget) and watched.window() is self:
+                if event.button() == Qt.XButton1:
+                    self.undo()
+                    return True
+                if event.button() == Qt.XButton2:
+                    self.redo()
+                    return True
+
+        return super().eventFilter(watched, event)
+
+    def push_undo_state(self):
+        """現在のマップ状態をUndo履歴へ保存する。"""
+        if not hasattr(self, "map_canvas"):
+            return
+
+        state = {
+            "map_data": copy.deepcopy(self.map_data),
+            "width": self.map_canvas.width_count,
+            "height": self.map_canvas.height_count,
+            "cell_size": self.map_canvas.cell_size,
+        }
+        self.undo_stack.append(state)
+
+        # 新しい編集をした時点でRedo履歴は無効
+        self.redo_stack.clear()
+        self.update_undo_redo_actions()
+
+    def restore_map_state(self, state):
+        """保存しておいたマップ状態を画面へ反映する。"""
+        self.map_data = copy.deepcopy(state["map_data"])
+
+        self.map_canvas.width_count = state["width"]
+        self.map_canvas.height_count = state["height"]
+        self.map_canvas.cell_size = state["cell_size"]
+        self.map_canvas.update_size()
+        self.map_canvas.set_map_data(self.map_data)
+
+        self.width_spin.setValue(state["width"])
+        self.height_spin.setValue(state["height"])
+        self.cell_spin.setValue(state["cell_size"])
+
+    def undo(self):
+        if not self.undo_stack:
+            return
+
+        # 現在の状態をRedo履歴へ退避
+        self.redo_stack.append({
+            "map_data": copy.deepcopy(self.map_data),
+            "width": self.map_canvas.width_count,
+            "height": self.map_canvas.height_count,
+            "cell_size": self.map_canvas.cell_size,
+        })
+
+        state = self.undo_stack.pop()
+        self.restore_map_state(state)
+        self.update_undo_redo_actions()
+
+    def redo(self):
+        if not self.redo_stack:
+            return
+
+        # 現在の状態をUndo履歴へ退避
+        self.undo_stack.append({
+            "map_data": copy.deepcopy(self.map_data),
+            "width": self.map_canvas.width_count,
+            "height": self.map_canvas.height_count,
+            "cell_size": self.map_canvas.cell_size,
+        })
+
+        state = self.redo_stack.pop()
+        self.restore_map_state(state)
+        self.update_undo_redo_actions()
+
+    def update_undo_redo_actions(self):
+        if hasattr(self, "undo_action"):
+            self.undo_action.setEnabled(bool(self.undo_stack))
+        if hasattr(self, "redo_action"):
+            self.redo_action.setEnabled(bool(self.redo_stack))
+
     def exit_app(self):
         result = QMessageBox.question(
             self,
